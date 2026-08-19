@@ -1,0 +1,21 @@
+-- AlterTable
+ALTER TABLE `user` ADD COLUMN `active` BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN `avatarUrl` VARCHAR(191) NULL,
+    ADD COLUMN `createdByAdminId` VARCHAR(191) NULL,
+    ADD COLUMN `notifyAnalysisDone` BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN `notifyEmail` BOOLEAN NOT NULL DEFAULT true;
+
+-- CreateTable
+CREATE TABLE `PlatformSettings` (
+    `id` INTEGER NOT NULL DEFAULT 1,
+    `prixCimentSac` INTEGER NOT NULL DEFAULT 5500,
+    `prixParpaing` INTEGER NOT NULL DEFAULT 350,
+    `prixFerBarre` INTEGER NOT NULL DEFAULT 6500,
+    `prixSableM3` INTEGER NOT NULL DEFAULT 8000,
+    `prixGravierM3` INTEGER NOT NULL DEFAULT 10000,
+    `prixBoisM3` INTEGER NOT NULL DEFAULT 150000,
+    `prixToleFeuille` INTEGER NOT NULL DEFAULT 4500,
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
