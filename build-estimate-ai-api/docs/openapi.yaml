@@ -1,0 +1,722 @@
+openapi: 3.0.3
+info:
+  title: Build Estimate AI — API
+  description: >
+    API Laravel de Build Estimate AI : import d'un plan architectural → analyse IA →
+    estimation des matériaux → rapport PDF. Toutes les réponses suivent l'enveloppe
+    `{success, data, message}` (succès) ou `{success, message, errors}` (échec).
+    Authentification via Laravel Sanctum en mode SPA stateful (cookies de session + CSRF,
+    pas de token Bearer) — le client doit d'abord appeler `GET /sanctum/csrf-cookie` puis
+    envoyer les requêtes avec les cookies, `withCredentials: true`, et l'en-tête
+    `X-XSRF-TOKEN`.
+  version: "1.0"
+servers:
+  - url: /api/v1
+
+tags:
+  - name: Auth
+  - name: Organizations
+  - name: Projects
+  - name: Plans
+  - name: Analysis
+  - name: Estimates
+  - name: Reports
+  - name: Billing
+  - name: Dashboard
+
+components:
+  securitySchemes:
+    sanctumSession:
+      type: apiKey
+      in: cookie
+      name: laravel_session
+      description: Session cookie issued after login; requires the `X-XSRF-TOKEN` header on state-changing requests.
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: {}
+        message: { type: string, nullable: true }
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        company_name: { type: string, nullable: true }
+        job_title: { type: string, nullable: true }
+
+    Organization:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        name: { type: string }
+        slug: { type: string }
+        owner_id: { type: integer }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        organization_id: { type: string, format: ulid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        project_type: { type: string, nullable: true }
+        location: { type: string, nullable: true }
+        currency: { type: string }
+        status: { type: string, enum: [draft, active, completed, archived] }
+
+    Plan:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        project_id: { type: string, format: ulid }
+        original_filename: { type: string }
+        mime_type: { type: string }
+        file_size: { type: integer }
+        status: { type: string, enum: [ready, processing, analyzed, failed] }
+        page_count: { type: integer, nullable: true }
+
+    Measurement:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        label: { type: string, nullable: true }
+        category: { type: string }
+        length: { type: number, nullable: true }
+        width: { type: number, nullable: true }
+        height: { type: number, nullable: true }
+        surface: { type: number, nullable: true }
+        thickness: { type: number, nullable: true }
+        volume: { type: number, nullable: true }
+        unit: { type: string }
+        source: { type: string, enum: [ai, user] }
+        confidence: { type: number, nullable: true }
+
+    PlanAnalysis:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        plan_id: { type: string, format: ulid }
+        status: { type: string, enum: [queued, processing, completed, needs_review, failed] }
+        provider: { type: string }
+        confidence_score: { type: number, nullable: true }
+        is_confirmed: { type: boolean }
+        error_message: { type: string, nullable: true }
+        measurements:
+          type: array
+          items: { $ref: "#/components/schemas/Measurement" }
+
+    EstimateItem:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        material_id: { type: string, format: ulid }
+        description: { type: string }
+        quantity: { type: number }
+        unit: { type: string }
+        unit_price: { type: number }
+        total_price: { type: number }
+        currency: { type: string }
+
+    Estimate:
+      type: object
+      description: >
+        Jamais une figure certifiée — `certified` est toujours `false` et `warning`
+        toujours présent (spec §22).
+      properties:
+        id: { type: string, format: ulid }
+        project_id: { type: string, format: ulid }
+        plan_id: { type: string, format: ulid }
+        analysis_id: { type: string, format: ulid }
+        status: { type: string, enum: [processing, completed, failed] }
+        subtotal: { type: number }
+        total: { type: number }
+        currency: { type: string }
+        calculation_version: { type: string }
+        certified: { type: boolean, example: false }
+        warning: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/EstimateItem" }
+
+    Report:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        estimate_id: { type: string, format: ulid }
+        status: { type: string, enum: [processing, completed, failed] }
+        file_size: { type: integer, nullable: true }
+        download_url: { type: string, nullable: true, description: "Présent uniquement si status=completed." }
+        error_message: { type: string, nullable: true }
+
+    SubscriptionPlan:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        name: { type: string }
+        slug: { type: string, enum: [free, pro, business] }
+        price_monthly: { type: number }
+        price_yearly: { type: number }
+        currency: { type: string }
+        limits:
+          type: object
+          description: "Une valeur null signifie illimité pour cette dimension."
+          properties:
+            plans_per_month: { type: integer, nullable: true }
+            analyses_per_month: { type: integer, nullable: true }
+            reports_per_month: { type: integer, nullable: true }
+            storage_mb: { type: integer, nullable: true }
+            team_members: { type: integer, nullable: true }
+
+    Subscription:
+      type: object
+      properties:
+        id: { type: string, format: ulid }
+        status: { type: string, enum: [trialing, active, past_due, canceled, expired] }
+        billing_interval: { type: string, enum: [monthly, yearly] }
+        current_period_start: { type: string, format: date-time, nullable: true }
+        current_period_end: { type: string, format: date-time, nullable: true }
+        cancel_at_period_end: { type: boolean }
+        plan: { $ref: "#/components/schemas/SubscriptionPlan" }
+
+    UsageSummary:
+      type: object
+      properties:
+        plan:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            slug: { type: string }
+        subscription_status: { type: string }
+        period: { type: string, example: "2026-08" }
+        usage:
+          type: object
+          properties:
+            plans_uploaded: { type: integer }
+            analyses_run: { type: integer }
+            reports_generated: { type: integer }
+            storage_used_mb: { type: integer }
+            team_members: { type: integer }
+        limits: { type: object }
+
+  responses:
+    Unauthorized:
+      description: Non authentifié
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: Authentifié mais non autorisé (policy refusée)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ValidationError:
+      description: Validation échouée
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    UsageLimitExceeded:
+      description: Limite du forfait d'abonnement dépassée
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+security:
+  - sanctumSession: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Créer un compte
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, password_confirmation]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                password_confirmation: { type: string, format: password }
+                phone: { type: string, nullable: true }
+                company_name: { type: string, nullable: true }
+                job_title: { type: string, nullable: true }
+      responses:
+        "201": { description: Compte créé, content: { application/json: { schema: { $ref: "#/components/schemas/SuccessEnvelope" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Se connecter
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200": { description: Connecté, content: { application/json: { schema: { $ref: "#/components/schemas/SuccessEnvelope" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Se déconnecter
+      responses:
+        "200": { description: Déconnecté }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Profil de l'utilisateur connecté
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties: { data: { $ref: "#/components/schemas/User" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Demander un lien de réinitialisation
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "200": { description: Lien envoyé si le compte existe }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Réinitialiser le mot de passe
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, email, password, password_confirmation]
+              properties:
+                token: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                password_confirmation: { type: string, format: password }
+      responses:
+        "200": { description: Mot de passe réinitialisé }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: Lister les organisations de l'utilisateur
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Organizations]
+      summary: Créer une organisation (le créateur en devient owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "201": { description: Créée }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /organizations/{organization}:
+    get:
+      tags: [Organizations]
+      summary: Détail d'une organisation
+      parameters:
+        - name: organization
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{organization}/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Compteurs, activité récente et usage de l'organisation
+      parameters:
+        - name: organization
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /subscription-plans:
+    get:
+      tags: [Billing]
+      summary: Lister les forfaits publics actifs
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/SubscriptionPlan" }
+
+  /organizations/{organization}/subscription:
+    get:
+      tags: [Billing]
+      summary: Abonnement courant et usage de l'organisation
+      parameters:
+        - name: organization
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Billing]
+      summary: Souscrire ou changer de forfait (owner/admin uniquement)
+      parameters:
+        - name: organization
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscription_plan_id]
+              properties:
+                subscription_plan_id: { type: string, format: ulid }
+                billing_interval: { type: string, enum: [monthly, yearly] }
+      responses:
+        "201": { description: Abonnement créé/mis à jour }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{organization}/subscription/cancel:
+    post:
+      tags: [Billing]
+      summary: Résilier l'abonnement (à la fin de la période en cours)
+      parameters:
+        - name: organization
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      responses:
+        "200": { description: Résiliation programmée }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "Aucun abonnement actif" }
+
+  /projects:
+    get:
+      tags: [Projects]
+      summary: Lister les projets de l'utilisateur
+      parameters:
+        - name: organization_id
+          in: query
+          schema: { type: string, format: ulid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, active, completed, archived] }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [name, status, created_at] }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [asc, desc] }
+        - name: per_page
+          in: query
+          schema: { type: integer }
+      responses:
+        "200": { description: "OK (paginé)" }
+    post:
+      tags: [Projects]
+      summary: Créer un projet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization_id, name]
+              properties:
+                organization_id: { type: string, format: ulid }
+                name: { type: string }
+                description: { type: string, nullable: true }
+                project_type: { type: string, nullable: true }
+                location: { type: string, nullable: true }
+                currency: { type: string, nullable: true }
+                metadata: { type: object, nullable: true }
+      responses:
+        "201": { description: Créé }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{project}:
+    get:
+      tags: [Projects]
+      summary: Détail d'un projet
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    patch:
+      tags: [Projects]
+      summary: "Modifier un projet (status non modifiable directement)"
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: Modifié }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [Projects]
+      summary: "Supprimer un projet (soft delete, owner/admin uniquement)"
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: Supprimé }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /projects/{project}/plans:
+    get:
+      tags: [Plans]
+      summary: Lister les plans d'un projet
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [Plans]
+      summary: "Téléverser un plan (multipart/form-data)"
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201": { description: Téléversé }
+        "402": { $ref: "#/components/responses/UsageLimitExceeded" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /plans/{plan}:
+    get:
+      tags: [Plans]
+      summary: Détail d'un plan
+      parameters: [{ name: plan, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [Plans]
+      summary: "Supprimer un plan (soft delete)"
+      parameters: [{ name: plan, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: Supprimé }
+
+  /plans/{plan}/analyze:
+    post:
+      tags: [Analysis]
+      summary: "Lancer l'analyse IA d'un plan (asynchrone, retourne immédiatement)"
+      parameters: [{ name: plan, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "202": { description: "Analyse mise en file d'attente" }
+        "402": { $ref: "#/components/responses/UsageLimitExceeded" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /analyses/{analysis}:
+    get:
+      tags: [Analysis]
+      summary: Détail d'une analyse (statut, mesures)
+      parameters: [{ name: analysis, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties: { data: { $ref: "#/components/schemas/PlanAnalysis" } }
+
+  /analyses/{analysis}/review:
+    post:
+      tags: [Analysis]
+      summary: Appliquer des corrections de mesures
+      parameters: [{ name: analysis, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: Corrections appliquées }
+
+  /analyses/{analysis}/confirm:
+    post:
+      tags: [Analysis]
+      summary: "Confirmer l'analyse (requis avant estimation)"
+      parameters: [{ name: analysis, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: Confirmée }
+        "422": { description: "Statut incompatible avec la confirmation" }
+
+  /analyses/{analysis}/measurements/{measurement}:
+    patch:
+      tags: [Analysis]
+      summary: Corriger une mesure individuelle
+      parameters:
+        - name: analysis
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+        - name: measurement
+          in: path
+          required: true
+          schema: { type: string, format: ulid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties: { data: { $ref: "#/components/schemas/Measurement" } }
+
+  /projects/{project}/estimates:
+    get:
+      tags: [Estimates]
+      summary: Lister les estimations d'un projet
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [Estimates]
+      summary: "Générer une estimation depuis une analyse confirmée (asynchrone)"
+      parameters: [{ name: project, in: path, required: true, schema: { type: string, format: ulid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [analysis_id]
+              properties: { analysis_id: { type: string, format: ulid } }
+      responses:
+        "202": { description: "Génération mise en file d'attente" }
+        "402": { $ref: "#/components/responses/UsageLimitExceeded" }
+        "422": { description: "Analyse non confirmée" }
+
+  /estimates/{estimate}:
+    get:
+      tags: [Estimates]
+      summary: Détail d'une estimation (jamais certifiée, voir schéma)
+      parameters: [{ name: estimate, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties: { data: { $ref: "#/components/schemas/Estimate" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /estimates/{estimate}/reports:
+    post:
+      tags: [Reports]
+      summary: "Générer un rapport PDF pour une estimation (asynchrone)"
+      parameters: [{ name: estimate, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "202": { description: "Génération mise en file d'attente" }
+        "402": { $ref: "#/components/responses/UsageLimitExceeded" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /reports/{report}:
+    get:
+      tags: [Reports]
+      summary: Statut d'un rapport
+      parameters: [{ name: report, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - properties: { data: { $ref: "#/components/schemas/Report" } }
+
+  /reports/{report}/download:
+    get:
+      tags: [Reports]
+      summary: "Télécharger le PDF (stream, policy-checked — jamais de chemin de stockage exposé)"
+      parameters: [{ name: report, in: path, required: true, schema: { type: string, format: ulid } }]
+      responses:
+        "200":
+          description: Fichier PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }

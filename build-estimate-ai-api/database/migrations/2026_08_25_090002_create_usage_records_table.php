@@ -1,0 +1,28 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('usage_records', function (Blueprint $table) {
+            $table->ulid('id')->primary();
+            $table->ulid('organization_id');
+            $table->string('metric'); // see App\Enums\UsageMetric
+            $table->string('period', 7); // 'YYYY-MM', calendar-month accounting
+            $table->unsignedInteger('count')->default(0);
+            $table->timestamps();
+
+            $table->foreign('organization_id')->references('id')->on('organizations')->cascadeOnDelete();
+            $table->unique(['organization_id', 'metric', 'period']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('usage_records');
+    }
+};

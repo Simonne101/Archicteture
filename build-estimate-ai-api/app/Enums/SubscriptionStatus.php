@@ -1,0 +1,17 @@
+<?php
+
+namespace App\Enums;
+
+enum SubscriptionStatus: string
+{
+    case Trialing = 'trialing';
+    case Active = 'active';
+    case PastDue = 'past_due';
+    case Canceled = 'canceled';
+    case Expired = 'expired';
+
+    public function grantsAccess(): bool
+    {
+        return in_array($this, [self::Trialing, self::Active], true);
+    }
+}
